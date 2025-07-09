@@ -1,133 +1,98 @@
 import streamlit as st
 import pandas as pd
+import io
 from datetime import datetime
-from io import BytesIO
-import zipfile
-import re
 
-st.set_page_config(page_title="KollegeApply Attendance Summary Generator")
-st.title("📋 KollegeApply Attendance Summary Generator")
-st.caption("Upload Attendance Excel File (.xlsx or .xls)")
+st.set_page_config(page_title="KollegeApply Attendance Summary Generator", page_icon="📝")
+
+st.title("📝 KollegeApply Attendance Summary Generator")
+st.subheader("Upload Attendance Excel File (.xlsx or .xls)")
 
 uploaded_file = st.file_uploader("Upload file", type=["xlsx", "xls"])
 
-def parse_sno_format(buffer):
-    df_all = pd.read_excel(buffer, sheet_name=0, header=None, engine="openpyxl")
+def detect_format(df):
+    """Detects which report format is present: '311' (new) or '407' (old)."""
+    cols = [col.lower() for col in df.columns]
+    if 'e. code' in cols or 'e code' in cols:
+        return '311'
+    elif 'employee code' in cols or 'emp code' in cols:
+        return '407'
+    else:
+        return 'unknown'
+
+def extract_311_format(df, sheet):
+    # Attempt to find header row (should be row 6 or nearby)
+    for i in range(0, 10):
+        row = df.iloc[i].astype(str).str.lower().tolist()
+        if "e. code" in row or "e code" in row:
+            df.columns = df.iloc[i]
+            df = df[i + 1:].reset_index(drop=True)
+            break
+
+    # Clean up
+    df = df.loc[:, ~df.columns.duplicated()]
+    df = df.rename(columns=lambda x: str(x).strip())
+    df = df[["E. Code", "Name", "Shift", "InTime", "OutTime", "Work Dur", "OT", "Tot. Dur", "Status", "Remarks"]]
+    df = df[df["E. Code"].notnull()]
+    df["Date"] = extract_date_from_sheet(sheet)
+    return df
+
+def extract_407_format(df, sheet):
+    # Find header row
+    for i in range(0, 10):
+        row = df.iloc[i].astype(str).str.lower().tolist()
+        if "employee code" in row or "emp code" in row:
+            df.columns = df.iloc[i]
+            df = df[i + 1:].reset_index(drop=True)
+            break
+
+    df = df.loc[:, ~df.columns.duplicated()]
+    df = df.rename(columns=lambda x: str(x).strip())
+
+    df = df[["Employee Code", "Name", "Shift", "InTime", "OutTime", "Work Duration", "OT", "Total Duration", "Status", "Remarks"]]
+    df = df[df["Employee Code"].notnull()]
+    df["Date"] = extract_date_from_sheet(sheet)
+    return df
+
+def extract_date_from_sheet(sheet):
     try:
-        attendance_date = df_all.iloc[1, 4]
-        if isinstance(attendance_date, datetime):
-            full_date = attendance_date.strftime("%Y-%m-%d")
-        elif isinstance(attendance_date, str):
-            full_date = datetime.strptime(attendance_date.strip(), "%d-%b-%Y").strftime("%Y-%m-%d")
-        else:
-            full_date = datetime.today().strftime("%Y-%m-%d")
+        for i in range(0, 10):
+            row = sheet.iloc[i].astype(str).tolist()
+            for item in row:
+                if "202" in item:
+                    dt = item.strip()
+                    try:
+                        return datetime.strptime(dt, "%d-%b-%Y").strftime("%d-%m-%Y")
+                    except:
+                        try:
+                            return datetime.strptime(dt, "%d-%b-%y").strftime("%d-%m-%Y")
+                        except:
+                            try:
+                                return datetime.strptime(dt, "%d-%m-%Y").strftime("%d-%m-%Y")
+                            except:
+                                continue
     except:
-        full_date = datetime.today().strftime("%Y-%m-%d")
-
-    df = pd.read_excel(buffer, sheet_name=0, header=4, engine="openpyxl")
-    if not {"E. Code", "Name", "InTime", "OutTime", "Status"}.intersection(df.columns):
-        return None, None
-
-    df_summary = df[["E. Code", "Name", "InTime", "OutTime", "Status"]].copy()
-    df_summary.rename(columns={"E. Code": "Emp Code"}, inplace=True)
-    df_summary["Date"] = full_date
-    df_summary = df_summary[["Emp Code", "Name", "Date", "InTime", "OutTime", "Status"]]
-    return df_summary, full_date
-
-def parse_name_status_format(buffer):
-    df_excel = pd.read_excel(buffer, sheet_name=0, header=4, engine="openpyxl")
-    if {"Name", "In Time", "OutTime", "Status"}.issubset(df_excel.columns):
-        df_raw = pd.read_excel(buffer, sheet_name=0, header=None, engine="openpyxl")
-        raw_date = df_raw.iloc[1, 1]
-        if isinstance(raw_date, datetime):
-            full_date = raw_date.strftime("%Y-%m-%d")
-        elif isinstance(raw_date, str):
-            full_date = datetime.strptime(raw_date.strip(), "%d-%b-%Y").strftime("%Y-%m-%d")
-        else:
-            full_date = datetime.today().strftime("%Y-%m-%d")
-
-        df_summary = df_excel[["E. Code", "Name", "In Time", "OutTime", "Status"]].copy()
-        df_summary.rename(columns={"E. Code": "Emp Code"}, inplace=True)
-        df_summary["Date"] = full_date
-        df_summary = df_summary[["Emp Code", "Name", "Date", "In Time", "OutTime", "Status"]]
-        return df_summary, full_date
-    return None, None
-
-def parse_raw_format(buffer):
-    df_clean = pd.read_excel(buffer, engine="openpyxl")
-    if 'Original record' not in df_clean.columns:
-        return None, None
-
-    df_clean = df_clean.dropna(subset=['Original record']).reset_index(drop=True)
-    date_line = str(df_clean.loc[0, 'Original record'])
-    date_match = re.search(r'Date:(\d{4}-\d{1,2}-\d{1,2})', date_line)
-    full_date = datetime.strptime(date_match.group(1), "%Y-%m-%d").strftime("%Y-%m-%d") if date_match else datetime.today().strftime("%Y-%m-%d")
-
-    records = []
-    for i in range(1, len(df_clean) - 2, 3):
-        try:
-            person_info = df_clean.loc[i, 'Original record']
-            time_entries = df_clean.loc[i + 2, 'Original record']
-
-            name_match = re.search(r'Name:(.*?)Dept', person_info)
-            name = name_match.group(1).strip() if name_match else "Unknown"
-
-            dept_match = re.search(r'Dept\.:([^\s]+)', person_info)
-            dept = dept_match.group(1).strip() if dept_match else "Unknown"
-
-            times = [t.strip() for t in time_entries.strip().split('\n') if t.strip()]
-            times_dt = [datetime.strptime(f"{full_date} {t}", "%Y-%m-%d %H:%M") for t in times]
-
-            in_time = min(times_dt).strftime("%H:%M")
-            out_time = max(times_dt).strftime("%H:%M")
-
-            records.append({
-                "Name": name,
-                "Department": dept,
-                "Date": full_date,
-                "In Time": in_time,
-                "Out Time": out_time
-            })
-
-        except Exception:
-            continue
-
-    df_summary = pd.DataFrame(records)
-    return df_summary, full_date
-
+        pass
+    return ""
 
 if uploaded_file:
     try:
-        buffer = BytesIO(uploaded_file.read())
-        if not zipfile.is_zipfile(buffer):
-            st.error("Uploaded file is not a valid Excel .xlsx file. Please re-save it in Excel.")
-            st.stop()
-        buffer.seek(0)
+        sheet = pd.read_excel(uploaded_file, sheet_name=0, header=None)
 
-        df_summary, full_date = parse_sno_format(buffer)
-        if df_summary is None:
-            buffer.seek(0)
-            df_summary, full_date = parse_name_status_format(buffer)
-        if df_summary is None:
-            buffer.seek(0)
-            df_summary, full_date = parse_raw_format(buffer)
-
-        if df_summary is None:
-            st.error("❌ Unable to detect supported format. Please check the file structure.")
+        format_type = detect_format(sheet)
+        if format_type == "311":
+            final_df = extract_311_format(sheet.copy(), sheet)
+        elif format_type == "407":
+            final_df = extract_407_format(sheet.copy(), sheet)
         else:
-            st.success("✅ File processed successfully!")
-            st.dataframe(df_summary)
+            st.warning("⚠️ Unable to detect supported format. Please check the file structure.")
+            st.stop()
 
-            csv_buffer = BytesIO()
-            df_summary.to_csv(csv_buffer, index=False)
-            csv_buffer.seek(0)
+        st.success("✅ File processed successfully!")
+        st.write(final_df)
 
-            st.download_button(
-                label=f"📥 Download CSV (summary_{full_date}.csv)",
-                data=csv_buffer,
-                file_name=f"df_summary_{full_date}.csv",
-                mime="text/csv"
-            )
+        csv = final_df.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Download Processed CSV", data=csv, file_name="attendance_summary.csv", mime='text/csv')
 
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"❌ Error processing file: {e}")
