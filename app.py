@@ -37,6 +37,15 @@ def detect_tabular_format(buffer, engine):
         return None
     return None
 
+def detect_basic_table(buffer, engine):
+    try:
+        df = pd.read_excel(buffer, header=4, engine=engine)
+        if {"E. Code", "Name", "Shift", "InTime", "OutTime", "Status"}.issubset(set(df.columns)):
+            return df
+    except:
+        return None
+    return None
+
 if uploaded_file:
     try:
         file_ext = uploaded_file.name.split(".")[-1].lower()
@@ -50,7 +59,7 @@ if uploaded_file:
         # CASE 1: Raw log format
         df_log = detect_log_format(buffer, engine)
         if df_log is not None:
-            st.success("Detected Log Format (Original record)")
+            st.success("✅ Detected Log Format (Original record)")
             df_log = df_log.dropna(subset=['Original record']).reset_index(drop=True)
 
             date_line = str(df_log.loc[0, 'Original record'])
@@ -88,11 +97,11 @@ if uploaded_file:
             summary = pd.DataFrame(records)
 
         else:
-            # CASE 2: Tabular sheet format
+            # CASE 2: Full Tabular Format
             buffer.seek(0)
             df_tab = detect_tabular_format(buffer, engine)
             if df_tab is not None:
-                st.success("Detected Tabular Daily Attendance Format")
+                st.success("✅ Detected Detailed Tabular Format")
 
                 buffer.seek(0)
                 df_header = pd.read_excel(buffer, header=None, engine=engine)
@@ -104,13 +113,30 @@ if uploaded_file:
                 summary["Date"] = full_date
                 summary = summary[["Emp Code", "Name", "Date", "InTime", "OutTime", "Status"]]
 
+            else:
+                # CASE 3: Simple Table Format with Shift
+                buffer.seek(0)
+                df_basic = detect_basic_table(buffer, engine)
+                if df_basic is not None:
+                    st.success("✅ Detected Simple Tabular Format")
+
+                    buffer.seek(0)
+                    df_header = pd.read_excel(buffer, header=None, engine=engine)
+                    raw_date = df_header.iloc[1, 1]
+                    full_date = try_parse_date(str(raw_date))
+
+                    summary = df_basic[["E. Code", "Name", "InTime", "OutTime", "Status"]].copy()
+                    summary.rename(columns={"E. Code": "Emp Code"}, inplace=True)
+                    summary["Date"] = full_date
+                    summary = summary[["Emp Code", "Name", "Date", "InTime", "OutTime", "Status"]]
+
         if summary is not None and not summary.empty:
             st.dataframe(summary)
             csv_data = summary.to_csv(index=False).encode("utf-8")
             st.download_button("📥 Download Summary CSV", csv_data, file_name=f"summary_{full_date}.csv", mime="text/csv")
         else:
-            st.warning("Unable to detect supported format. Please check the file structure.")
+            st.warning("⚠️ Unable to detect supported format. Please check the file structure.")
 
     except Exception as e:
-        st.error("Something went wrong. Try with a valid Excel file.")
+        st.error("❌ Error parsing the file.")
         st.exception(e)
