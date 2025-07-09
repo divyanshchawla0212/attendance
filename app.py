@@ -11,13 +11,19 @@ uploaded_file = st.file_uploader("Upload Attendance Excel File (.xlsx or .xls)",
 
 if uploaded_file:
     try:
-        df = pd.read_excel(uploaded_file, sheet_name=0)
+        # Read raw bytes and wrap in BytesIO for consistent engine use
+        excel_bytes = uploaded_file.read()
+        buffer = BytesIO(excel_bytes)
 
-        # Check if this is OLD FORMAT
-        if "Original record" in df.columns:
-            df_clean = df.dropna(subset=['Original record']).reset_index(drop=True)
+        # Load a preview dataframe to check format
+        preview_df = pd.read_excel(buffer, sheet_name=0, nrows=2, header=None, engine="openpyxl")
+
+        # OLD FORMAT CHECK (Original record column exists)
+        buffer.seek(0)
+        df_check = pd.read_excel(buffer, sheet_name=0, engine="openpyxl")
+        if "Original record" in df_check.columns:
+            df_clean = df_check.dropna(subset=['Original record']).reset_index(drop=True)
             date_line = str(df_clean.loc[0, 'Original record'])
-
             date_match = re.search(r'Date:(\d{4}-\d{1,2}-\d{1,2})', date_line)
             if date_match:
                 full_date = datetime.strptime(date_match.group(1), "%Y-%m-%d").strftime("%Y-%m-%d")
@@ -57,40 +63,41 @@ if uploaded_file:
             st.success(f"✅ Parsed {len(df_summary)} records from old format ({full_date})")
             st.dataframe(df_summary)
 
-        # Else NEW FORMAT (like "311 Daily Attendance Report")
+        # NEW FORMAT (structured sheet like '311 Daily Attendance Report')
         else:
-            # Attendance table starts from row 5 (header=4)
-            df_table = pd.read_excel(uploaded_file, sheet_name=0, header=4)
+            buffer.seek(0)
+            df_table = pd.read_excel(buffer, sheet_name=0, header=4, engine="openpyxl")
+            buffer.seek(0)
+            meta_df = pd.read_excel(buffer, sheet_name=0, header=None, engine="openpyxl")
 
-            # Try to extract date from D2 (row 1, col 3 → 0-indexed)
-            raw_meta = pd.read_excel(uploaded_file, sheet_name=0, header=None)
             try:
-                raw_date = str(raw_meta.iloc[1, 3]).strip()
+                raw_date = str(meta_df.iloc[1, 4]).strip()
                 full_date = datetime.strptime(raw_date, "%d-%b-%Y").strftime("%Y-%m-%d")
             except:
                 full_date = "Unknown"
 
             if "Name" in df_table.columns and "Status" in df_table.columns:
                 df_filtered = df_table[df_table["Status"].astype(str).str.lower() == "present"]
-
-                # Columns may include "In Time", "Out Time"
-                df_filtered = df_filtered[["Name", "In Time", "Out Time", "Status"]]
+                df_filtered = df_filtered[["Name", "In Time", "OutTime", "Status"]]
                 df_filtered["Date"] = full_date
 
-                df_summary = df_filtered[["Name", "Date", "In Time", "Out Time", "Status"]]
+                df_summary = df_filtered.rename(columns={"OutTime": "Out Time"})[
+                    ["Name", "Date", "In Time", "Out Time", "Status"]
+                ]
+
                 st.success(f"✅ Parsed {len(df_summary)} present records from new format ({full_date})")
                 st.dataframe(df_summary)
             else:
-                st.error("Could not find expected columns in uploaded sheet.")
+                st.error("Could not find expected columns in the uploaded sheet.")
                 st.stop()
 
         # ===== CSV Download =====
-        buffer = BytesIO()
-        df_summary.to_csv(buffer, index=False)
-        buffer.seek(0)
+        csv_buffer = BytesIO()
+        df_summary.to_csv(csv_buffer, index=False)
+        csv_buffer.seek(0)
         st.download_button(
             label="📥 Download Attendance Summary CSV",
-            data=buffer,
+            data=csv_buffer,
             file_name=f"attendance_summary_{full_date}.csv",
             mime="text/csv"
         )
