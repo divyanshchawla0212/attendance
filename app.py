@@ -13,7 +13,7 @@ if uploaded_file:
     try:
         df = pd.read_excel(uploaded_file, sheet_name=0)
 
-        # Check if this is OLD FORMAT (Original record column exists)
+        # Check if this is OLD FORMAT
         if "Original record" in df.columns:
             df_clean = df.dropna(subset=['Original record']).reset_index(drop=True)
             date_line = str(df_clean.loc[0, 'Original record'])
@@ -57,31 +57,39 @@ if uploaded_file:
             st.success(f"✅ Parsed {len(df_summary)} records from old format ({full_date})")
             st.dataframe(df_summary)
 
-        # Else: assume NEW FORMAT (structured sheet like you just uploaded)
+        # Else NEW FORMAT (like "311 Daily Attendance Report")
         else:
+            # Attendance table starts from row 5 (header=4)
             df_table = pd.read_excel(uploaded_file, sheet_name=0, header=4)
-            meta_df = pd.read_excel(uploaded_file, sheet_name=0, header=None)
-            raw_date = str(meta_df.iloc[1, 4]).strip()
 
+            # Try to extract date from D2 (row 1, col 3 → 0-indexed)
+            raw_meta = pd.read_excel(uploaded_file, sheet_name=0, header=None)
             try:
+                raw_date = str(raw_meta.iloc[1, 3]).strip()
                 full_date = datetime.strptime(raw_date, "%d-%b-%Y").strftime("%Y-%m-%d")
             except:
-                full_date = raw_date
+                full_date = "Unknown"
 
-            df_filtered = df_table[df_table["Status"].astype(str).str.lower() == "present"]
-            df_filtered = df_filtered[["Name", "In Time", "Out Time", "Status"]]
-            df_filtered["Date"] = full_date
-            df_summary = df_filtered[["Name", "Date", "In Time", "Out Time", "Status"]]
+            if "Name" in df_table.columns and "Status" in df_table.columns:
+                df_filtered = df_table[df_table["Status"].astype(str).str.lower() == "present"]
 
-            st.success(f"✅ Parsed {len(df_summary)} records from new format ({full_date})")
-            st.dataframe(df_summary)
+                # Columns may include "In Time", "Out Time"
+                df_filtered = df_filtered[["Name", "In Time", "Out Time", "Status"]]
+                df_filtered["Date"] = full_date
 
-        # Download button
+                df_summary = df_filtered[["Name", "Date", "In Time", "Out Time", "Status"]]
+                st.success(f"✅ Parsed {len(df_summary)} present records from new format ({full_date})")
+                st.dataframe(df_summary)
+            else:
+                st.error("Could not find expected columns in uploaded sheet.")
+                st.stop()
+
+        # ===== CSV Download =====
         buffer = BytesIO()
         df_summary.to_csv(buffer, index=False)
         buffer.seek(0)
         st.download_button(
-            label="📥 Download Summary CSV",
+            label="📥 Download Attendance Summary CSV",
             data=buffer,
             file_name=f"attendance_summary_{full_date}.csv",
             mime="text/csv"
