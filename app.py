@@ -6,7 +6,6 @@ import re
 import zipfile
 
 st.set_page_config(page_title="KollegeApply Attendance Summary Generator")
-
 st.title("📋 KollegeApply Attendance Summary Generator")
 st.caption("Upload Attendance Excel File (.xlsx or .xls)")
 
@@ -14,7 +13,6 @@ uploaded_file = st.file_uploader("Upload file", type=["xlsx", "xls"])
 
 if uploaded_file:
     try:
-        # Validate zip format (xlsx must be ZIP internally)
         buffer = BytesIO(uploaded_file.read())
         if not zipfile.is_zipfile(buffer):
             st.error("Uploaded file is not a valid Excel .xlsx file. Please re-save it in Excel.")
@@ -22,16 +20,20 @@ if uploaded_file:
 
         buffer.seek(0)
 
-        # Try reading from the sheet with actual header row (5th row → header=4)
+        # Load header from row 5 (index 4) for formatted version
         df_excel = pd.read_excel(buffer, sheet_name=0, header=4, engine="openpyxl")
+        df_excel = df_excel.loc[:, ~df_excel.columns.str.contains('^Unnamed')]
+        df_excel.columns = df_excel.columns.str.strip()
 
-        # Check if it contains recognizable columns
-        if {"Name", "In Time", "OutTime", "Status"}.issubset(df_excel.columns):
+        required_cols = {"E. Code", "Name", "InTime", "OutTime", "Status"}
+
+        if required_cols.issubset(set(df_excel.columns)):
             st.success("Detected new Daily Attendance format")
-            # Extract date from second row, second column (row index 1, col index 1)
+
             buffer.seek(0)
             df_raw = pd.read_excel(buffer, sheet_name=0, header=None, engine="openpyxl")
-            raw_date = df_raw.iloc[1, 1]
+            raw_date = df_raw.iloc[1, 4]  # Date at 2nd row, 5th column
+
             if isinstance(raw_date, datetime):
                 full_date = raw_date.strftime("%Y-%m-%d")
             elif isinstance(raw_date, str):
@@ -39,10 +41,11 @@ if uploaded_file:
             else:
                 full_date = datetime.today().strftime("%Y-%m-%d")
 
-            df_summary = df_excel[["E. Code", "Name", "In Time", "OutTime", "Status"]].copy()
+            df_summary = df_excel[["E. Code", "Name", "InTime", "OutTime", "Status"]].copy()
             df_summary["Date"] = full_date
             df_summary.rename(columns={"E. Code": "Emp Code"}, inplace=True)
-            df_summary = df_summary[["Emp Code", "Name", "Date", "In Time", "OutTime", "Status"]]
+            df_summary = df_summary[["Emp Code", "Name", "Date", "InTime", "OutTime", "Status"]]
+
         else:
             st.success("Detected raw parser format")
             df_clean = pd.read_excel(buffer, engine="openpyxl")
@@ -84,7 +87,6 @@ if uploaded_file:
 
             df_summary = pd.DataFrame(records)
 
-        # Show and download
         st.dataframe(df_summary)
 
         csv_buffer = BytesIO()
