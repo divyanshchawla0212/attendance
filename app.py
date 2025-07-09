@@ -11,54 +11,43 @@ st.caption("Upload Attendance Excel File (.xlsx or .xls)")
 
 uploaded_file = st.file_uploader("Upload file", type=["xlsx", "xls"])
 
-def is_structured_format(df):
-    return {"E. Code", "Name", "InTime", "OutTime", "Status"}.issubset(df.columns) or \
-           {"E. Code", "Name", "In Time", "OutTime", "Status"}.issubset(df.columns)
-
 if uploaded_file:
     try:
-        file_ext = uploaded_file.name.split('.')[-1]
         buffer = BytesIO(uploaded_file.read())
+        if not zipfile.is_zipfile(buffer):
+            st.error("Uploaded file is not a valid Excel .xlsx file. Please re-save it in Excel.")
+            st.stop()
 
-        # Format 3: Old .xls (parsed without zip check)
-        if file_ext == "xls":
-            df_excel = pd.read_excel(buffer, sheet_name=0, header=4, engine="xlrd")
-        else:
-            # Format 1 or 2: .xlsx (verify zip)
-            if not zipfile.is_zipfile(buffer):
-                st.error("Uploaded file is not a valid .xlsx file. Please re-save it properly.")
-                st.stop()
+        buffer.seek(0)
+
+        # Load header from row 5 (index 4) for formatted version
+        df_excel = pd.read_excel(buffer, sheet_name=0, header=4, engine="openpyxl")
+        df_excel = df_excel.loc[:, ~df_excel.columns.str.contains('^Unnamed')]
+        df_excel.columns = df_excel.columns.str.strip()
+
+        required_cols = {"E. Code", "Name", "InTime", "OutTime", "Status"}
+
+        if required_cols.issubset(set(df_excel.columns)):
+            st.success("Detected new Daily Attendance format")
+
             buffer.seek(0)
-            df_excel = pd.read_excel(buffer, sheet_name=0, header=4, engine="openpyxl")
+            df_raw = pd.read_excel(buffer, sheet_name=0, header=None, engine="openpyxl")
+            raw_date = df_raw.iloc[1, 4]  # Date at 2nd row, 5th column
 
-        # Format 1 or 3: Structured
-        if is_structured_format(df_excel):
-            st.success("✅ Detected structured Daily Attendance format")
-
-            buffer.seek(0)
-            df_raw = pd.read_excel(buffer, sheet_name=0, header=None, engine="openpyxl" if file_ext == "xlsx" else "xlrd")
-            raw_date = df_raw.iloc[1, 1]
             if isinstance(raw_date, datetime):
                 full_date = raw_date.strftime("%Y-%m-%d")
             elif isinstance(raw_date, str):
-                try:
-                    full_date = datetime.strptime(raw_date.strip(), "%d-%b-%Y").strftime("%Y-%m-%d")
-                except:
-                    full_date = datetime.today().strftime("%Y-%m-%d")
+                full_date = datetime.strptime(raw_date.strip(), "%d-%b-%Y").strftime("%Y-%m-%d")
             else:
                 full_date = datetime.today().strftime("%Y-%m-%d")
 
-            df_summary = df_excel[["E. Code", "Name", "In Time" if "In Time" in df_excel.columns else "InTime",
-                                   "OutTime", "Status"]].copy()
+            df_summary = df_excel[["E. Code", "Name", "InTime", "OutTime", "Status"]].copy()
             df_summary["Date"] = full_date
             df_summary.rename(columns={"E. Code": "Emp Code"}, inplace=True)
-            df_summary = df_summary[["Emp Code", "Name", "Date", "In Time" if "In Time" in df_summary.columns else "InTime",
-                                     "OutTime", "Status"]]
+            df_summary = df_summary[["Emp Code", "Name", "Date", "InTime", "OutTime", "Status"]]
 
         else:
-            # Format 2: Raw parser format (Original record)
-            buffer.seek(0)
-            st.success("✅ Detected raw log format")
+            st.success("Detected raw parser format")
             df_clean = pd.read_excel(buffer, engine="openpyxl")
             df_clean = df_clean.dropna(subset=['Original record']).reset_index(drop=True)
 
@@ -98,7 +87,6 @@ if uploaded_file:
 
             df_summary = pd.DataFrame(records)
 
-        # Show & Download
         st.dataframe(df_summary)
 
         csv_buffer = BytesIO()
@@ -108,9 +96,9 @@ if uploaded_file:
         st.download_button(
             label=f"📥 Download CSV (summary_{full_date}.csv)",
             data=csv_buffer,
-            file_name=f"attendance_summary_{full_date}.csv",
+            file_name=f"df_summary_{full_date}.csv",
             mime="text/csv"
         )
 
     except Exception as e:
-        st.error(f"❌ Error: {e}")
+        st.error(f"Error: {e}")
