@@ -10,88 +10,107 @@ st.caption("Upload Attendance Excel File (.xlsx or .xls)")
 
 uploaded_file = st.file_uploader("Upload file", type=["xlsx", "xls"])
 
+def try_parse_date(date_str):
+    for fmt in ("%d-%b-%Y", "%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(date_str.strip(), fmt).strftime("%Y-%m-%d")
+        except:
+            continue
+    return datetime.today().strftime("%Y-%m-%d")
+
+def detect_log_format(buffer, engine):
+    try:
+        df = pd.read_excel(buffer, engine=engine)
+        if "Original record" in df.columns:
+            return df
+    except:
+        return None
+    return None
+
+def detect_tabular_format(buffer, engine):
+    try:
+        df = pd.read_excel(buffer, header=4, engine=engine)
+        tabular_cols = {"E. Code", "Name", "InTime", "OutTime", "Status"}
+        if tabular_cols.issubset(set(df.columns)):
+            return df
+    except:
+        return None
+    return None
+
 if uploaded_file:
     try:
         file_ext = uploaded_file.name.split(".")[-1].lower()
+        engine = "xlrd" if file_ext == "xls" else "openpyxl"
         buffer = BytesIO(uploaded_file.read())
         buffer.seek(0)
 
-        df_summary = None
+        summary = None
         full_date = datetime.today().strftime("%Y-%m-%d")
 
-        # Try case 1: "Original record" format
-        try:
-            df_log = pd.read_excel(buffer, engine="xlrd" if file_ext == "xls" else "openpyxl")
-            if "Original record" in df_log.columns:
-                st.success("Detected raw log format")
+        # CASE 1: Raw log format
+        df_log = detect_log_format(buffer, engine)
+        if df_log is not None:
+            st.success("Detected Log Format (Original record)")
+            df_log = df_log.dropna(subset=['Original record']).reset_index(drop=True)
 
-                df_clean = df_log.dropna(subset=['Original record']).reset_index(drop=True)
-                date_line = str(df_clean.loc[0, 'Original record'])
-                date_match = re.search(r'Date:(\d{4}-\d{1,2}-\d{1,2})', date_line)
-                full_date = datetime.strptime(date_match.group(1), "%Y-%m-%d").strftime("%Y-%m-%d") if date_match else full_date
+            date_line = str(df_log.loc[0, 'Original record'])
+            date_match = re.search(r'Date:(\d{4}-\d{1,2}-\d{1,2})', date_line)
+            full_date = datetime.strptime(date_match.group(1), "%Y-%m-%d").strftime("%Y-%m-%d") if date_match else full_date
 
-                records = []
-                for i in range(1, len(df_clean) - 2, 3):
-                    try:
-                        person_info = df_clean.loc[i, 'Original record']
-                        time_entries = df_clean.loc[i + 2, 'Original record']
+            records = []
+            for i in range(1, len(df_log) - 2, 3):
+                try:
+                    person_info = df_log.loc[i, 'Original record']
+                    time_entries = df_log.loc[i + 2, 'Original record']
 
-                        name_match = re.search(r'Name:(.*?)Dept', person_info)
-                        name = name_match.group(1).strip() if name_match else "Unknown"
+                    name = re.search(r'Name:(.*?)Dept', person_info)
+                    dept = re.search(r'Dept\.:([^\s]+)', person_info)
 
-                        dept_match = re.search(r'Dept\.:([^\s]+)', person_info)
-                        dept = dept_match.group(1).strip() if dept_match else "Unknown"
+                    name = name.group(1).strip() if name else "Unknown"
+                    dept = dept.group(1).strip() if dept else "Unknown"
 
-                        times = [t.strip() for t in time_entries.strip().split('\n') if t.strip()]
-                        times_dt = [datetime.strptime(f"{full_date} {t}", "%Y-%m-%d %H:%M") for t in times]
+                    times = [t.strip() for t in time_entries.strip().split('\n') if t.strip()]
+                    times_dt = [datetime.strptime(f"{full_date} {t}", "%Y-%m-%d %H:%M") for t in times]
 
-                        in_time = min(times_dt).strftime("%H:%M")
-                        out_time = max(times_dt).strftime("%H:%M")
+                    in_time = min(times_dt).strftime("%H:%M")
+                    out_time = max(times_dt).strftime("%H:%M")
 
-                        records.append({
-                            "Name": name,
-                            "Department": dept,
-                            "Date": full_date,
-                            "In Time": in_time,
-                            "Out Time": out_time
-                        })
-                    except Exception:
-                        continue
+                    records.append({
+                        "Name": name,
+                        "Department": dept,
+                        "Date": full_date,
+                        "In Time": in_time,
+                        "Out Time": out_time
+                    })
+                except:
+                    continue
 
-                df_summary = pd.DataFrame(records)
+            summary = pd.DataFrame(records)
 
-        except Exception:
-            pass
-
-        # Try case 2: New tabular format (header starts at row 5)
-        if df_summary is None:
-            buffer.seek(0)
-            try:
-                df_tabular = pd.read_excel(buffer, header=4, engine="xlrd" if file_ext == "xls" else "openpyxl")
-                required_cols = {"E. Code", "Name", "InTime", "OutTime", "Status"}
-                if required_cols.issubset(set(df_tabular.columns)):
-                    st.success("Detected Daily Attendance tabular format")
-                    buffer.seek(0)
-                    df_head = pd.read_excel(buffer, header=None, engine="xlrd" if file_ext == "xls" else "openpyxl")
-                    raw_date = df_head.iloc[1, 1]
-                    if isinstance(raw_date, datetime):
-                        full_date = raw_date.strftime("%Y-%m-%d")
-                    elif isinstance(raw_date, str):
-                        full_date = datetime.strptime(raw_date.strip(), "%d-%b-%Y").strftime("%Y-%m-%d")
-
-                    df_summary = df_tabular[["E. Code", "Name", "InTime", "OutTime", "Status"]].copy()
-                    df_summary.rename(columns={"E. Code": "Emp Code"}, inplace=True)
-                    df_summary["Date"] = full_date
-                    df_summary = df_summary[["Emp Code", "Name", "Date", "InTime", "OutTime", "Status"]]
-            except Exception:
-                pass
-
-        if df_summary is not None and not df_summary.empty:
-            st.dataframe(df_summary)
-            csv = df_summary.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download CSV", csv, file_name=f"summary_{full_date}.csv", mime='text/csv')
         else:
-            st.error("❌ Could not detect format. Please upload a supported attendance Excel file.")
+            # CASE 2: Tabular sheet format
+            buffer.seek(0)
+            df_tab = detect_tabular_format(buffer, engine)
+            if df_tab is not None:
+                st.success("Detected Tabular Daily Attendance Format")
+
+                buffer.seek(0)
+                df_header = pd.read_excel(buffer, header=None, engine=engine)
+                raw_date = df_header.iloc[1, 1]
+                full_date = try_parse_date(str(raw_date))
+
+                summary = df_tab[["E. Code", "Name", "InTime", "OutTime", "Status"]].copy()
+                summary.rename(columns={"E. Code": "Emp Code"}, inplace=True)
+                summary["Date"] = full_date
+                summary = summary[["Emp Code", "Name", "Date", "InTime", "OutTime", "Status"]]
+
+        if summary is not None and not summary.empty:
+            st.dataframe(summary)
+            csv_data = summary.to_csv(index=False).encode("utf-8")
+            st.download_button("📥 Download Summary CSV", csv_data, file_name=f"summary_{full_date}.csv", mime="text/csv")
+        else:
+            st.warning("Unable to detect supported format. Please check the file structure.")
 
     except Exception as e:
+        st.error("Something went wrong. Try with a valid Excel file.")
         st.exception(e)
